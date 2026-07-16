@@ -6,50 +6,64 @@ export interface BookRow {
   owner_id: string;
   title: string;
   author: string;
-  type: "pages" | "chapters";
-  total_pages: number | null;
+  total_pages: number;
+  cover_url: string | null;
   created_at: string;
 }
 
-export function getProgress(
-  book: BookRow,
-  subjectType: "owner" | "viewer",
-  subjectId: string
-): { locationType: "page" | "chapter"; locationValue: number } {
-  const row = db
-    .prepare(
-      `SELECT location_type, location_value FROM progress
-       WHERE subject_type = ? AND subject_id = ? AND book_id = ?`
-    )
-    .get(subjectType, subjectId, book.id) as
-    | { location_type: "page" | "chapter"; location_value: number }
-    | undefined;
+export interface ProgressInfo {
+  page: number;
+  myTotalPages: number | null;
+}
 
-  if (row) return { locationType: row.location_type, locationValue: row.location_value };
-  return { locationType: book.type === "chapters" ? "chapter" : "page", locationValue: 0 };
+export function getProgress(bookId: string, userId: string): ProgressInfo {
+  const row = db
+    .prepare(`SELECT page, my_total_pages FROM progress WHERE user_id = ? AND book_id = ?`)
+    .get(userId, bookId) as { page: number; my_total_pages: number | null } | undefined;
+  if (row) return { page: row.page, myTotalPages: row.my_total_pages };
+  return { page: 0, myTotalPages: null };
 }
 
 export function setProgress(
-  book: BookRow,
-  subjectType: "owner" | "viewer",
-  subjectId: string,
-  locationType: "page" | "chapter",
-  locationValue: number
+  bookId: string,
+  userId: string,
+  page: number,
+  myTotalPages?: number | null
 ) {
   const existing = db
-    .prepare(
-      `SELECT id FROM progress WHERE subject_type = ? AND subject_id = ? AND book_id = ?`
-    )
-    .get(subjectType, subjectId, book.id) as { id: string } | undefined;
+    .prepare(`SELECT id, my_total_pages FROM progress WHERE user_id = ? AND book_id = ?`)
+    .get(userId, bookId) as { id: string; my_total_pages: number | null } | undefined;
+
+  const totalToUse = myTotalPages !== undefined ? myTotalPages : existing?.my_total_pages ?? null;
 
   if (existing) {
     db.prepare(
-      `UPDATE progress SET location_type = ?, location_value = ?, updated_at = datetime('now') WHERE id = ?`
-    ).run(locationType, locationValue, existing.id);
+      `UPDATE progress SET page = ?, my_total_pages = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run(page, totalToUse, existing.id);
   } else {
     db.prepare(
-      `INSERT INTO progress (id, subject_type, subject_id, book_id, location_type, location_value)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(uuid(), subjectType, subjectId, book.id, locationType, locationValue);
+      `INSERT INTO progress (id, user_id, book_id, page, my_total_pages) VALUES (?, ?, ?, ?, ?)`
+    ).run(uuid(), userId, bookId, page, totalToUse);
+  }
+}
+
+// A reader's own recorded edition length, falling back to the book's
+// reference page count, so a Kindle reader and a print reader can compare
+// progress by percentage-through-the-book rather than raw page number.
+export function effectiveTotalPages(book: BookRow, userId: string): number {
+  const row = db
+    .prepare(`SELECT my_total_pages FROM progress WHERE user_id = ? AND book_id = ?`)
+    .get(userId, book.id) as { my_total_pages: number | null } | undefined;
+  return row?.my_total_pages || book.total_pages;
+}
+
+export function ensureMembership(bookId: string, userId: string) {
+  const existing = db
+    .prepare(`SELECT id FROM progress WHERE user_id = ? AND book_id = ?`)
+    .get(userId, bookId);
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO progress (id, user_id, book_id, page, my_total_pages) VALUES (?, ?, ?, 0, NULL)`
+    ).run(uuid(), userId, bookId);
   }
 }

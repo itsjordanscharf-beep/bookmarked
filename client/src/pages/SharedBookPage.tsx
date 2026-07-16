@@ -1,22 +1,21 @@
 import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { viewerApi, getViewerSession, saveViewerSession, ApiError } from "../api/client";
+import { Link, useParams } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { api, ApiError } from "../api/client";
 import type { BookMeta, SharedView } from "../api/types";
 import { EmojiPicker } from "../components/EmojiPicker";
-import { OwnNoteCard, RevealableNoteCard, HiddenAheadBadge, locTypeForBook } from "../components/NoteCards";
+import { OwnNoteCard, RevealableNoteCard, HiddenAheadBadge } from "../components/NoteCards";
 
 export function SharedBookPage() {
   const { code } = useParams<{ code: string }>();
+  const { user, loading: authLoading } = useAuth();
   const [bookMeta, setBookMeta] = useState<BookMeta | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [view, setView] = useState<SharedView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [displayName, setDisplayName] = useState("");
-  const [joining, setJoining] = useState(false);
-
   const [progressValue, setProgressValue] = useState("");
+  const [myTotalPages, setMyTotalPages] = useState("");
   const [savingProgress, setSavingProgress] = useState(false);
 
   const [noteLocation, setNoteLocation] = useState("");
@@ -26,53 +25,34 @@ export function SharedBookPage() {
 
   useEffect(() => {
     if (!code) return;
-    viewerApi
-      .get(`/shared/${code}`, "")
+    api
+      .get(`/shared/${code}`)
       .then(setBookMeta)
       .catch((err) => setError(err instanceof ApiError ? err.message : "Failed to load"));
-
-    const session = getViewerSession(code);
-    if (session) setToken(session.viewerToken);
   }, [code]);
 
-  async function loadView(t: string) {
+  async function loadView() {
     if (!code) return;
-    const data = await viewerApi.get(`/shared/${code}/view`, t);
+    const data = await api.get(`/shared/${code}/view`);
     setView(data);
-    setProgressValue(String(data.progress.locationValue));
+    setProgressValue(String(data.progress.page));
+    setMyTotalPages(data.progress.myTotalPages ? String(data.progress.myTotalPages) : "");
   }
 
   useEffect(() => {
-    if (token) loadView(token).catch((err) => setError(err instanceof ApiError ? err.message : "Failed to load"));
+    if (user) loadView().catch((err) => setError(err instanceof ApiError ? err.message : "Failed to load"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
-
-  async function handleJoin(e: FormEvent) {
-    e.preventDefault();
-    if (!code) return;
-    setJoining(true);
-    setError(null);
-    try {
-      const result = await viewerApi.post(`/shared/${code}/join`, null, { displayName });
-      saveViewerSession(code, result);
-      setToken(result.viewerToken);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to join");
-    } finally {
-      setJoining(false);
-    }
-  }
+  }, [user, code]);
 
   async function handleProgressSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!code || !token || !bookMeta) return;
     setSavingProgress(true);
     try {
-      await viewerApi.put(`/shared/${code}/progress`, token, {
-        locationType: locTypeForBook(bookMeta.type),
-        locationValue: Number(progressValue),
+      await api.put(`/shared/${code}/progress`, {
+        page: Number(progressValue),
+        myTotalPages: myTotalPages ? Number(myTotalPages) : null,
       });
-      await loadView(token);
+      await loadView();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to update progress");
     } finally {
@@ -82,19 +62,17 @@ export function SharedBookPage() {
 
   async function handleNoteSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!code || !token || !bookMeta) return;
     setSavingNote(true);
     try {
-      await viewerApi.post(`/shared/${code}/notes`, token, {
-        locationType: locTypeForBook(bookMeta.type),
-        locationValue: Number(noteLocation),
+      await api.post(`/shared/${code}/notes`, {
+        page: Number(noteLocation),
         text: noteText,
         emoji: noteEmoji,
       });
       setNoteLocation("");
       setNoteText("");
       setNoteEmoji(null);
-      await loadView(token);
+      await loadView();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to add note");
     } finally {
@@ -103,8 +81,17 @@ export function SharedBookPage() {
   }
 
   async function revealOwnerNote(noteId: string) {
-    if (!code || !token) throw new Error("Not ready");
-    return viewerApi.post(`/shared/${code}/notes/${noteId}/reveal`, token);
+    return api.post(`/shared/${code}/notes/${noteId}/reveal`);
+  }
+
+  if (authLoading || (!bookMeta && !error)) {
+    return (
+      <div className="app-shell">
+        <main className="main">
+          <div className="spinner-page">Opening shared book…</div>
+        </main>
+      </div>
+    );
   }
 
   if (error && !bookMeta) {
@@ -117,17 +104,9 @@ export function SharedBookPage() {
     );
   }
 
-  if (!bookMeta) {
-    return (
-      <div className="app-shell">
-        <main className="main">
-          <div className="spinner-page">Opening shared book…</div>
-        </main>
-      </div>
-    );
-  }
+  const redirectParam = `?redirect=${encodeURIComponent(`/shared/${code}`)}`;
 
-  if (!token || !view) {
+  if (!user) {
     return (
       <div className="app-shell">
         <header className="topbar">
@@ -137,42 +116,42 @@ export function SharedBookPage() {
         </header>
         <main className="main">
           <div className="page-header">
-            <h1 className="serif">{bookMeta.title}</h1>
-            <p className="author muted">{bookMeta.author}</p>
+            <h1 className="serif">{bookMeta!.title}</h1>
+            <p className="author muted">{bookMeta!.author}</p>
           </div>
           <div className="card join-card">
             <p className="serif" style={{ fontSize: "1.1rem" }}>
               You've been sent this book's reactions
             </p>
             <p className="muted">
-              Enter your name, then set your own reading progress — you'll only see notes for
-              parts you've already reached.
+              Sign in to join — you'll set your own reading progress and only see notes for parts
+              you've already reached.
             </p>
-            {error && <div className="error-banner">{error}</div>}
-            <form onSubmit={handleJoin}>
-              <div className="field">
-                <label htmlFor="displayName">Your name</label>
-                <input
-                  id="displayName"
-                  required
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                />
-              </div>
-              <button className="btn btn-primary btn-block" disabled={joining}>
-                {joining ? "Joining…" : "Start reading along"}
-              </button>
-            </form>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 16 }}>
+              <Link to={`/login${redirectParam}`} className="btn btn-primary">
+                Log in
+              </Link>
+              <Link to={`/register${redirectParam}`} className="btn btn-secondary">
+                Create an account
+              </Link>
+            </div>
           </div>
         </main>
       </div>
     );
   }
 
-  const progressPct =
-    bookMeta.type === "pages" && bookMeta.totalPages
-      ? Math.min(100, Math.round((view.progress.locationValue / bookMeta.totalPages) * 100))
-      : null;
+  if (!view) {
+    return (
+      <div className="app-shell">
+        <main className="main">
+          <div className="spinner-page">Loading…</div>
+        </main>
+      </div>
+    );
+  }
+
+  const progressPct = Math.min(100, Math.round((view.progress.page / view.book.totalPages) * 100));
 
   return (
     <div className="app-shell">
@@ -180,46 +159,52 @@ export function SharedBookPage() {
         <span className="brand">
           <span className="brand-mark">🔖</span> Bookmarked
         </span>
-        <span className="muted">Reading as {view.displayName}</span>
+        <span className="muted">Reading as {user.name}</span>
       </header>
       <main className="main">
         <div className="page-header">
-          <h1 className="serif">{bookMeta.title}</h1>
-          <p className="author muted">{bookMeta.author}</p>
+          <h1 className="serif">{view.book.title}</h1>
+          <p className="author muted">{view.book.author}</p>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
 
         <section className="card">
           <h3 style={{ marginTop: 0 }}>Your progress</h3>
-          {progressPct !== null && (
-            <div className="progress-track" style={{ marginBottom: 14 }}>
-              <div className="progress-fill" style={{ width: `${progressPct}%` }} />
-            </div>
-          )}
+          <div className="progress-track" style={{ marginBottom: 14 }}>
+            <div className="progress-fill" style={{ width: `${progressPct}%` }} />
+          </div>
           <form onSubmit={handleProgressSubmit} className="progress-block">
-            <div className="field" style={{ marginBottom: 0, flex: "0 0 160px" }}>
-              <label htmlFor="progress">
-                {bookMeta.type === "pages" ? "Currently on page" : "Currently on chapter"}
-              </label>
+            <div className="field" style={{ marginBottom: 0, flex: "0 0 140px" }}>
+              <label htmlFor="progress">Currently on page</label>
               <input
                 id="progress"
                 type="number"
                 min={0}
-                max={bookMeta.type === "pages" ? bookMeta.totalPages ?? undefined : bookMeta.chapters.length}
                 value={progressValue}
                 onChange={(e) => setProgressValue(e.target.value)}
+              />
+            </div>
+            <div className="field" style={{ marginBottom: 0, flex: "0 0 200px" }}>
+              <label htmlFor="myTotalPages">My edition's total pages (optional)</label>
+              <input
+                id="myTotalPages"
+                type="number"
+                min={1}
+                placeholder={String(view.book.totalPages)}
+                value={myTotalPages}
+                onChange={(e) => setMyTotalPages(e.target.value)}
               />
             </div>
             <button className="btn btn-secondary" disabled={savingProgress}>
               {savingProgress ? "Saving…" : "Update progress"}
             </button>
           </form>
-          {bookMeta.type === "chapters" && (
-            <p className="muted" style={{ marginTop: 10, marginBottom: 0, fontSize: "0.85rem" }}>
-              {bookMeta.chapters.map((c) => c.title).join(" · ")}
-            </p>
-          )}
+          <p className="muted" style={{ marginTop: 10, marginBottom: 0, fontSize: "0.8rem" }}>
+            On a different edition (like a Kindle) than the {view.book.totalPages}-page reference?
+            Set your own page count above — notes unlock by percentage through the book, not raw
+            page number.
+          </p>
         </section>
 
         <h3 className="section-title">Notes unlocked so far</h3>
@@ -232,12 +217,7 @@ export function SharedBookPage() {
             )}
             <div className="note-list">
               {view.ownerNotes.map((n) => (
-                <RevealableNoteCard
-                  key={n.id}
-                  note={n}
-                  chapters={bookMeta.chapters}
-                  onReveal={revealOwnerNote}
-                />
+                <RevealableNoteCard key={n.id} note={n} onReveal={revealOwnerNote} />
               ))}
             </div>
             <HiddenAheadBadge count={view.hiddenCount} />
@@ -247,17 +227,17 @@ export function SharedBookPage() {
         <h3 className="section-title">Leave a note back</h3>
         <div className="card">
           <p className="muted" style={{ marginTop: 0 }}>
-            Duel reactions — leave your own note at a page or chapter you've already reached.
+            Duel reactions — leave your own note at a page you've already reached.
           </p>
           <form onSubmit={handleNoteSubmit}>
             <div className="field-row">
-              <div className="field" style={{ flex: "0 0 160px" }}>
-                <label htmlFor="noteLocation">{bookMeta.type === "pages" ? "Page" : "Chapter"}</label>
+              <div className="field" style={{ flex: "0 0 120px" }}>
+                <label htmlFor="noteLocation">Page</label>
                 <input
                   id="noteLocation"
                   type="number"
                   min={0}
-                  max={view.progress.locationValue}
+                  max={view.progress.page}
                   required
                   value={noteLocation}
                   onChange={(e) => setNoteLocation(e.target.value)}
@@ -290,7 +270,7 @@ export function SharedBookPage() {
             <h3 className="section-title">Notes you've left</h3>
             <div className="note-list">
               {view.myNotesBack.map((n) => (
-                <OwnNoteCard key={n.id} note={n} chapters={bookMeta.chapters} />
+                <OwnNoteCard key={n.id} note={n} />
               ))}
             </div>
           </>

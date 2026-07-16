@@ -17,8 +17,10 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT,
+  google_id TEXT UNIQUE,
   name TEXT NOT NULL,
+  avatar_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -27,26 +29,16 @@ CREATE TABLE IF NOT EXISTS books (
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   author TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('pages','chapters')),
-  total_pages INTEGER,
+  total_pages INTEGER NOT NULL,
+  cover_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS chapters (
-  id TEXT PRIMARY KEY,
-  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  idx INTEGER NOT NULL,
-  title TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS notes (
   id TEXT PRIMARY KEY,
   book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  creator_type TEXT NOT NULL CHECK (creator_type IN ('owner','viewer')),
-  creator_viewer_id TEXT REFERENCES viewers(id) ON DELETE SET NULL,
-  creator_name TEXT NOT NULL,
-  location_type TEXT NOT NULL CHECK (location_type IN ('page','chapter')),
-  location_value INTEGER NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  page INTEGER NOT NULL,
   text TEXT NOT NULL,
   emoji TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -59,36 +51,42 @@ CREATE TABLE IF NOT EXISTS shares (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS viewers (
+-- A user who has opened a share link and joined the book's readership.
+-- Membership is what unlocks the friend view; it requires a real account.
+CREATE TABLE IF NOT EXISTS share_members (
   id TEXT PRIMARY KEY,
   share_id TEXT NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
-  token TEXT UNIQUE NOT NULL,
-  display_name TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(share_id, user_id)
 );
 
+-- Progress is per reader per book, whether that reader is the book's owner
+-- or a friend who joined via a share. my_total_pages lets a reader on a
+-- different edition (e.g. Kindle vs. paperback) record their own page count
+-- so progress/notes compare by percentage-through-the-book instead of raw
+-- page number.
 CREATE TABLE IF NOT EXISTS progress (
   id TEXT PRIMARY KEY,
-  subject_type TEXT NOT NULL CHECK (subject_type IN ('owner','viewer')),
-  subject_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  location_type TEXT NOT NULL CHECK (location_type IN ('page','chapter')),
-  location_value INTEGER NOT NULL DEFAULT 0,
+  page INTEGER NOT NULL DEFAULT 0,
+  my_total_pages INTEGER,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(subject_type, subject_id, book_id)
+  UNIQUE(user_id, book_id)
 );
 
 CREATE TABLE IF NOT EXISTS reveals (
   id TEXT PRIMARY KEY,
-  subject_type TEXT NOT NULL CHECK (subject_type IN ('owner','viewer')),
-  subject_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
   revealed_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(subject_type, subject_id, note_id)
+  UNIQUE(user_id, note_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_notes_book ON notes(book_id);
-CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
 CREATE INDEX IF NOT EXISTS idx_shares_book ON shares(book_id);
-CREATE INDEX IF NOT EXISTS idx_viewers_share ON viewers(share_id);
+CREATE INDEX IF NOT EXISTS idx_share_members_share ON share_members(share_id);
+CREATE INDEX IF NOT EXISTS idx_share_members_user ON share_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_progress_book ON progress(book_id);
 `);

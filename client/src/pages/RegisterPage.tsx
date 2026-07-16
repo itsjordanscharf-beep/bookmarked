@@ -1,11 +1,15 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth, ApiError } from "../context/AuthContext";
+import { GoogleSignInButton } from "../components/GoogleSignInButton";
 
 export function RegisterPage() {
-  const { register } = useAuth();
+  const { register, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTo = searchParams.get("redirect") || "/";
+
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -18,11 +22,21 @@ export function RegisterPage() {
     setSubmitting(true);
     try {
       await register(email, password, name);
-      navigate("/");
+      navigate(redirectTo);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleGoogle(idToken: string) {
+    setError(null);
+    try {
+      await loginWithGoogle(idToken);
+      navigate(redirectTo);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
     }
   }
 
@@ -32,6 +46,7 @@ export function RegisterPage() {
       <p className="muted auth-sub">Track your reactions, page by page.</p>
       <div className="card">
         {error && <div className="error-banner">{error}</div>}
+        <GoogleSignInButton onCredential={handleGoogle} />
         <form onSubmit={handleSubmit}>
           <div className="field">
             <label htmlFor="name">Name</label>
@@ -64,7 +79,10 @@ export function RegisterPage() {
         </form>
       </div>
       <p className="muted" style={{ textAlign: "center", marginTop: 18 }}>
-        Already have an account? <Link to="/login">Log in</Link>
+        Already have an account?{" "}
+        <Link to={`/login${redirectTo !== "/" ? `?redirect=${encodeURIComponent(redirectTo)}` : ""}`}>
+          Log in
+        </Link>
       </p>
     </div>
   );

@@ -1,20 +1,11 @@
-export type LocationType = "page" | "chapter";
-export type BookType = "pages" | "chapters";
-
-export interface Chapter {
-  idx: number;
-  title: string;
-}
-
 export interface Progress {
-  locationType: LocationType;
-  locationValue: number;
+  page: number;
+  myTotalPages: number | null;
 }
 
 export interface OwnNote {
   id: string;
-  locationType: LocationType;
-  locationValue: number;
+  page: number;
   text: string;
   emoji: string | null;
   createdAt: string;
@@ -22,9 +13,8 @@ export interface OwnNote {
 
 export interface VisibleNote {
   id: string;
-  locationType: LocationType;
-  locationValue: number;
-  creatorType: "owner" | "viewer";
+  page: number;
+  creatorId: string;
   creatorName: string;
   emoji: string | null;
   createdAt: string;
@@ -36,20 +26,26 @@ export interface BookMeta {
   id: string;
   title: string;
   author: string;
-  type: BookType;
-  totalPages: number | null;
-  chapters: Chapter[];
+  totalPages: number;
+  coverUrl: string | null;
 }
 
 export interface BookSummary {
   id: string;
   title: string;
   author: string;
-  type: BookType;
-  totalPages: number | null;
+  totalPages: number;
+  coverUrl: string | null;
   noteCount: number;
   progress: Progress;
   shareCount: number;
+}
+
+export interface ShareInfo {
+  id: string;
+  code: string;
+  created_at: string;
+  members: string[];
 }
 
 export interface BookDetail extends BookMeta {
@@ -57,22 +53,22 @@ export interface BookDetail extends BookMeta {
   myNotes: OwnNote[];
   friendNotes: VisibleNote[];
   hiddenFriendNotes: number;
-  shares: { id: string; code: string; created_at: string }[];
+  shares: ShareInfo[];
 }
 
 export interface SharedView {
   book: BookMeta;
-  displayName: string;
+  isOwner: boolean;
   progress: Progress;
   ownerNotes: VisibleNote[];
   hiddenCount: number;
   myNotesBack: OwnNote[];
 }
 
-export function locationLabel(type: LocationType, value: number, chapters?: Chapter[]): string {
-  if (type === "chapter") {
-    const chapter = chapters?.find((c) => c.idx === value);
-    return chapter ? `Ch. ${value} — ${chapter.title}` : `Chapter ${value}`;
-  }
-  return `Page ${value}`;
+export interface BookSearchResult {
+  externalId: string;
+  title: string;
+  author: string;
+  totalPages: number | null;
+  coverUrl: string | null;
 }

@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { db } from "../db";
-import { uuid, viewerToken as genViewerToken } from "../util/ids";
-import { getProgress, setProgress, BookRow } from "../util/progress";
-import { partitionNotes, NoteRow } from "../util/spoiler";
+import { uuid } from "../util/ids";
+import { requireAuth, AuthedRequest } from "../middleware/auth";
+import { getProgress, setProgress, effectiveTotalPages, ensureMembership, BookRow } from "../util/progress";
+import { partitionNotes, notesForBook } from "../util/spoiler";
 
 export const sharedRouter = Router();
 
@@ -24,102 +25,65 @@ function loadShare(code: string, res: any): ShareRow | null {
   return share;
 }
 
-function loadViewer(share: ShareRow, req: any, res: any) {
-  const token = req.header("X-Viewer-Token");
-  if (!token) {
-    res.status(401).json({ error: "Missing viewer token" });
-    return null;
-  }
-  const viewer = db
-    .prepare("SELECT * FROM viewers WHERE token = ? AND share_id = ?")
-    .get(token, share.id) as { id: string; display_name: string } | undefined;
-  if (!viewer) {
-    res.status(401).json({ error: "Unknown viewer token for this share" });
-    return null;
-  }
-  return viewer;
-}
-
 function bookMeta(book: BookRow) {
-  const chapters = db
-    .prepare("SELECT idx, title FROM chapters WHERE book_id = ? ORDER BY idx")
-    .all(book.id);
   return {
     id: book.id,
     title: book.title,
     author: book.author,
-    type: book.type,
     totalPages: book.total_pages,
-    chapters,
+    coverUrl: book.cover_url,
   };
 }
 
-// Public: fetch book meta for a share code (no viewer identity required yet)
+// Public: fetch book meta for a share code, used to render the "sign in to
+// join" prompt before the visitor has an account or session.
 sharedRouter.get("/:code", (req, res) => {
-  const share = loadShare(req.params.code, res);
+  const share = loadShare(String(req.params.code), res);
   if (!share) return;
   const book = db.prepare("SELECT * FROM books WHERE id = ?").get(share.book_id) as BookRow;
   res.json(bookMeta(book));
 });
 
-// Join a share as a friend, get back a persistent viewer token
-sharedRouter.post("/:code/join", (req, res) => {
-  const share = loadShare(req.params.code, res);
-  if (!share) return;
+// Everything past this point requires a real account — friends must sign in
+// (email or Google) before they can join a shared book.
+sharedRouter.use(requireAuth);
 
-  const { displayName } = req.body || {};
-  if (!displayName || !String(displayName).trim()) {
-    return res.status(400).json({ error: "displayName is required" });
-  }
-
-  const id = uuid();
-  const token = genViewerToken();
+function joinShare(share: ShareRow, userId: string) {
   db.prepare(
-    `INSERT INTO viewers (id, share_id, token, display_name) VALUES (?, ?, ?, ?)`
-  ).run(id, share.id, token, String(displayName).trim());
+    `INSERT OR IGNORE INTO share_members (id, share_id, user_id) VALUES (?, ?, ?)`
+  ).run(uuid(), share.id, userId);
+  ensureMembership(share.book_id, userId);
+}
 
-  res.status(201).json({ viewerId: id, viewerToken: token, displayName: displayName.trim() });
-});
-
-// Friend's view: book + own progress + spoiler-filtered owner notes + own notes-back
-sharedRouter.get("/:code/view", (req, res) => {
-  const share = loadShare(req.params.code, res);
+// Friend's view: book + own progress + spoiler-filtered owner notes + own notes-back.
+// Joining happens automatically on first view now that identity comes from
+// a real account rather than an anonymous display name.
+sharedRouter.get("/:code/view", (req: AuthedRequest, res) => {
+  const share = loadShare(String(req.params.code), res);
   if (!share) return;
-  const viewer = loadViewer(share, req, res);
-  if (!viewer) return;
+  joinShare(share, req.userId!);
 
   const book = db.prepare("SELECT * FROM books WHERE id = ?").get(share.book_id) as BookRow;
-  const progress = getProgress(book, "viewer", viewer.id);
+  const progress = getProgress(book.id, req.userId!);
 
-  const ownerNoteRows = db
-    .prepare(`SELECT * FROM notes WHERE book_id = ? AND creator_type = 'owner'`)
-    .all(book.id) as NoteRow[];
-  const { visible: ownerNotes, hiddenCount } = partitionNotes(
-    ownerNoteRows,
-    progress.locationValue,
-    "viewer",
-    viewer.id
-  );
+  const allNotes = notesForBook(book.id);
+  const ownerNoteRows = allNotes.filter((n) => n.user_id === book.owner_id);
+  const { visible: ownerNotes, hiddenCount } = partitionNotes(book, ownerNoteRows, req.userId!);
 
-  const myNotesBack = (
-    db
-      .prepare(
-        `SELECT * FROM notes WHERE book_id = ? AND creator_type = 'viewer' AND creator_viewer_id = ?
-         ORDER BY location_value, created_at`
-      )
-      .all(book.id, viewer.id) as NoteRow[]
-  ).map((n) => ({
-    id: n.id,
-    locationType: n.location_type,
-    locationValue: n.location_value,
-    text: n.text,
-    emoji: n.emoji,
-    createdAt: n.created_at,
-  }));
+  const myNotesBack = allNotes
+    .filter((n) => n.user_id === req.userId && n.user_id !== book.owner_id)
+    .sort((a, b) => a.page - b.page || a.created_at.localeCompare(b.created_at))
+    .map((n) => ({
+      id: n.id,
+      page: n.page,
+      text: n.text,
+      emoji: n.emoji,
+      createdAt: n.created_at,
+    }));
 
   res.json({
     book: bookMeta(book),
-    displayName: viewer.display_name,
+    isOwner: book.owner_id === req.userId,
     progress,
     ownerNotes,
     hiddenCount,
@@ -127,73 +91,68 @@ sharedRouter.get("/:code/view", (req, res) => {
   });
 });
 
-// Friend updates their own progress
-sharedRouter.put("/:code/progress", (req, res) => {
-  const share = loadShare(req.params.code, res);
+// Friend updates their own progress (optionally recording their own edition's
+// total page count for percentage-normalized spoiler comparisons)
+sharedRouter.put("/:code/progress", (req: AuthedRequest, res) => {
+  const share = loadShare(String(req.params.code), res);
   if (!share) return;
-  const viewer = loadViewer(share, req, res);
-  if (!viewer) return;
+  joinShare(share, req.userId!);
 
-  const book = db.prepare("SELECT * FROM books WHERE id = ?").get(share.book_id) as BookRow;
-  const { locationType, locationValue } = req.body || {};
-  if (!locationType || locationValue == null) {
-    return res.status(400).json({ error: "locationType and locationValue are required" });
-  }
-  setProgress(book, "viewer", viewer.id, locationType, locationValue);
-  res.json(getProgress(book, "viewer", viewer.id));
+  const { page, myTotalPages } = req.body || {};
+  if (page == null) return res.status(400).json({ error: "page is required" });
+
+  setProgress(share.book_id, req.userId!, page, myTotalPages);
+  res.json(getProgress(share.book_id, req.userId!));
 });
 
 // Friend taps to reveal an available (unlocked) note
-sharedRouter.post("/:code/notes/:noteId/reveal", (req, res) => {
-  const share = loadShare(req.params.code, res);
+sharedRouter.post("/:code/notes/:noteId/reveal", (req: AuthedRequest, res) => {
+  const share = loadShare(String(req.params.code), res);
   if (!share) return;
-  const viewer = loadViewer(share, req, res);
-  if (!viewer) return;
+  joinShare(share, req.userId!);
 
   const book = db.prepare("SELECT * FROM books WHERE id = ?").get(share.book_id) as BookRow;
   const note = db
     .prepare("SELECT * FROM notes WHERE id = ? AND book_id = ?")
-    .get(req.params.noteId, book.id) as NoteRow | undefined;
+    .get(req.params.noteId, book.id) as { id: string; user_id: string; page: number; text: string } | undefined;
   if (!note) return res.status(404).json({ error: "Note not found" });
 
-  const progress = getProgress(book, "viewer", viewer.id);
-  if (note.location_value > progress.locationValue) {
+  const progress = getProgress(book.id, req.userId!);
+  const viewerTotal = effectiveTotalPages(book, req.userId!);
+  const creatorTotal = effectiveTotalPages(book, note.user_id);
+  const viewerPercent = progress.page / viewerTotal;
+  const notePercent = note.page / creatorTotal;
+  if (notePercent > viewerPercent) {
     return res.status(403).json({ error: "You haven't reached this part yet" });
   }
 
   db.prepare(
-    `INSERT OR IGNORE INTO reveals (id, subject_type, subject_id, note_id) VALUES (?, 'viewer', ?, ?)`
-  ).run(uuid(), viewer.id, note.id);
+    `INSERT OR IGNORE INTO reveals (id, user_id, note_id) VALUES (?, ?, ?)`
+  ).run(uuid(), req.userId, note.id);
 
   res.json({ id: note.id, text: note.text });
 });
 
 // Friend leaves a note back for the owner (dueling reactions)
-sharedRouter.post("/:code/notes", (req, res) => {
-  const share = loadShare(req.params.code, res);
+sharedRouter.post("/:code/notes", (req: AuthedRequest, res) => {
+  const share = loadShare(String(req.params.code), res);
   if (!share) return;
-  const viewer = loadViewer(share, req, res);
-  if (!viewer) return;
+  joinShare(share, req.userId!);
 
-  const book = db.prepare("SELECT * FROM books WHERE id = ?").get(share.book_id) as BookRow;
-  const { locationType, locationValue, text, emoji } = req.body || {};
-  if (!locationType || locationValue == null || !text) {
-    return res.status(400).json({ error: "locationType, locationValue, and text are required" });
-  }
-  if (locationType !== (book.type === "chapters" ? "chapter" : "page")) {
-    return res.status(400).json({ error: `This book is organized by ${book.type}` });
+  const { page, text, emoji } = req.body || {};
+  if (page == null || !text) {
+    return res.status(400).json({ error: "page and text are required" });
   }
 
-  const progress = getProgress(book, "viewer", viewer.id);
-  if (locationValue > progress.locationValue) {
+  const progress = getProgress(share.book_id, req.userId!);
+  if (page > progress.page) {
     return res.status(403).json({ error: "You can only leave notes up to your own progress" });
   }
 
   const id = uuid();
   db.prepare(
-    `INSERT INTO notes (id, book_id, creator_type, creator_viewer_id, creator_name, location_type, location_value, text, emoji)
-     VALUES (?, ?, 'viewer', ?, ?, ?, ?, ?, ?)`
-  ).run(id, book.id, viewer.id, viewer.display_name, locationType, locationValue, text, emoji || null);
+    `INSERT INTO notes (id, book_id, user_id, page, text, emoji) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(id, share.book_id, req.userId, page, text, emoji || null);
 
   res.status(201).json({ id });
 });

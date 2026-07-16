@@ -1,14 +1,11 @@
 import { useState } from "react";
-import type { Chapter, LocationType, OwnNote, VisibleNote } from "../api/types";
-import { locationLabel } from "../api/types";
+import type { OwnNote, VisibleNote } from "../api/types";
 
-export function OwnNoteCard({ note, chapters }: { note: OwnNote; chapters: Chapter[] }) {
+export function OwnNoteCard({ note }: { note: OwnNote }) {
   return (
     <div className="note-card">
       <div className="note-card-head">
-        <span className="note-location">
-          {locationLabel(note.locationType, note.locationValue, chapters)}
-        </span>
+        <span className="note-location">Page {note.page}</span>
         {note.emoji && <span className="note-emoji">{note.emoji}</span>}
       </div>
       <p className="note-text">{note.text}</p>
@@ -18,11 +15,9 @@ export function OwnNoteCard({ note, chapters }: { note: OwnNote; chapters: Chapt
 
 export function RevealableNoteCard({
   note,
-  chapters,
   onReveal,
 }: {
   note: VisibleNote;
-  chapters: Chapter[];
   onReveal: (noteId: string) => Promise<{ text: string }>;
 }) {
   const [revealed, setRevealed] = useState(note.revealed);
@@ -46,9 +41,7 @@ export function RevealableNoteCard({
         }}
       >
         <span>
-          <span className="note-location">
-            {locationLabel(note.locationType, note.locationValue, chapters)}
-          </span>
+          <span className="note-location">Page {note.page}</span>
           {" — "}
           <em>{revealing ? "revealing…" : `note from ${note.creatorName}, tap to reveal`}</em>
         </span>
@@ -60,9 +53,7 @@ export function RevealableNoteCard({
   return (
     <div className="note-card">
       <div className="note-card-head">
-        <span className="note-location">
-          {locationLabel(note.locationType, note.locationValue, chapters)}
-        </span>
+        <span className="note-location">Page {note.page}</span>
         {note.emoji && <span className="note-emoji">{note.emoji}</span>}
       </div>
       <p className="note-text">{text}</p>
@@ -82,8 +73,4 @@ export function HiddenAheadBadge({ count }: { count: number }) {
       </span>
     </div>
   );
-}
-
-export function locTypeForBook(bookType: "pages" | "chapters"): LocationType {
-  return bookType === "chapters" ? "chapter" : "page";
 }

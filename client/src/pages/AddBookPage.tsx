@@ -1,35 +1,70 @@
 import type { FormEvent } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Layout } from "../components/Layout";
 import { api, ApiError } from "../api/client";
-import type { BookType } from "../api/types";
+import type { BookSearchResult } from "../api/types";
 
 export function AddBookPage() {
   const navigate = useNavigate();
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
-  const [type, setType] = useState<BookType>("pages");
   const [totalPages, setTotalPages] = useState("");
-  const [chapterText, setChapterText] = useState("");
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+
+  const [suggestions, setSuggestions] = useState<BookSearchResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const suppressNextSearch = useRef(false);
+
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (suppressNextSearch.current) {
+      suppressNextSearch.current = false;
+      return;
+    }
+    const q = title.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    setSearching(true);
+    const handle = setTimeout(() => {
+      api
+        .get(`/book-search?q=${encodeURIComponent(q)}`)
+        .then((results: BookSearchResult[]) => {
+          setSuggestions(results);
+          setShowSuggestions(true);
+        })
+        .catch(() => setSuggestions([]))
+        .finally(() => setSearching(false));
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [title]);
+
+  function selectSuggestion(result: BookSearchResult) {
+    suppressNextSearch.current = true;
+    setTitle(result.title);
+    setAuthor(result.author);
+    if (result.totalPages) setTotalPages(String(result.totalPages));
+    setCoverUrl(result.coverUrl);
+    setSuggestions([]);
+    setShowSuggestions(false);
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      const body: Record<string, unknown> = { title, author, type };
-      if (type === "pages") {
-        body.totalPages = Number(totalPages);
-      } else {
-        body.chapters = chapterText
-          .split("\n")
-          .map((c) => c.trim())
-          .filter(Boolean);
-      }
-      const created = await api.post("/books", body);
+      const created = await api.post("/books", {
+        title,
+        author,
+        totalPages: Number(totalPages),
+        coverUrl,
+      });
       navigate(`/books/${created.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -42,16 +77,58 @@ export function AddBookPage() {
     <Layout>
       <div className="page-header">
         <h1 className="serif">Add a book</h1>
-        <p className="muted">Tell us the basics — you'll log reactions next.</p>
+        <p className="muted">Start typing a title — we'll fill in the details.</p>
       </div>
       <div className="card">
         {error && <div className="error-banner">{error}</div>}
         <form onSubmit={handleSubmit}>
+          <div className="field" style={{ position: "relative" }}>
+            <label htmlFor="title">Title</label>
+            <input
+              id="title"
+              required
+              autoComplete="off"
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                setCoverUrl(null);
+              }}
+              onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            />
+            {searching && (
+              <span className="muted" style={{ fontSize: "0.78rem" }}>
+                Searching…
+              </span>
+            )}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="autocomplete-list">
+                {suggestions.map((s) => (
+                  <button
+                    type="button"
+                    key={s.externalId}
+                    className="autocomplete-item"
+                    onMouseDown={() => selectSuggestion(s)}
+                  >
+                    {s.coverUrl ? (
+                      <img src={s.coverUrl} alt="" className="autocomplete-cover" />
+                    ) : (
+                      <span className="autocomplete-cover autocomplete-cover-placeholder">📕</span>
+                    )}
+                    <span className="autocomplete-text">
+                      <span className="autocomplete-title">{s.title}</span>
+                      <span className="autocomplete-author muted">
+                        {s.author}
+                        {s.totalPages ? ` · ${s.totalPages} pages` : ""}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="field-row">
-            <div className="field">
-              <label htmlFor="title">Title</label>
-              <input id="title" required value={title} onChange={(e) => setTitle(e.target.value)} />
-            </div>
             <div className="field">
               <label htmlFor="author">Author</label>
               <input
@@ -61,18 +138,7 @@ export function AddBookPage() {
                 onChange={(e) => setAuthor(e.target.value)}
               />
             </div>
-          </div>
-
-          <div className="field">
-            <label htmlFor="type">This book is organized by</label>
-            <select id="type" value={type} onChange={(e) => setType(e.target.value as BookType)}>
-              <option value="pages">Pages</option>
-              <option value="chapters">Chapters</option>
-            </select>
-          </div>
-
-          {type === "pages" ? (
-            <div className="field">
+            <div className="field" style={{ flex: "0 0 140px" }}>
               <label htmlFor="totalPages">Total pages</label>
               <input
                 id="totalPages"
@@ -83,19 +149,7 @@ export function AddBookPage() {
                 onChange={(e) => setTotalPages(e.target.value)}
               />
             </div>
-          ) : (
-            <div className="field">
-              <label htmlFor="chapters">Chapter titles (one per line, in order)</label>
-              <textarea
-                id="chapters"
-                rows={6}
-                required
-                placeholder={"Chapter 1: The Beginning\nChapter 2: ..."}
-                value={chapterText}
-                onChange={(e) => setChapterText(e.target.value)}
-              />
-            </div>
-          )}
+          </div>
 
           <button className="btn btn-primary btn-block" disabled={submitting}>
             {submitting ? "Adding…" : "Add book"}

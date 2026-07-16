@@ -6,6 +6,7 @@ import "./db";
 import { authRouter } from "./routes/auth";
 import { booksRouter } from "./routes/books";
 import { sharedRouter } from "./routes/shared";
+import { bookSearchRouter } from "./routes/bookSearch";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -19,6 +20,7 @@ app.use(cookieParser());
 app.use("/api/auth", authRouter);
 app.use("/api/books", booksRouter);
 app.use("/api/shared", sharedRouter);
+app.use("/api/book-search", bookSearchRouter);
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 

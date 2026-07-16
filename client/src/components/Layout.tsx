@@ -18,6 +18,13 @@ export function Layout({ children, wide }: { children: React.ReactNode; wide?: b
         </Link>
         {user && (
           <nav className="topbar-nav">
+            {user.avatarUrl && (
+              <img
+                src={user.avatarUrl}
+                alt=""
+                style={{ width: 26, height: 26, borderRadius: "50%" }}
+              />
+            )}
             <span>{user.name}</span>
             <button className="btn-ghost" onClick={handleLogout}>
               Log out

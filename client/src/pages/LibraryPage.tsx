@@ -41,15 +41,14 @@ export function LibraryPage() {
         <div className="book-list">
           {books.map((b) => (
             <Link key={b.id} to={`/books/${b.id}`} className="card book-row">
-              <div>
+              {b.coverUrl && <img src={b.coverUrl} alt="" className="book-cover" />}
+              <div style={{ flex: 1 }}>
                 <p className="book-row-title">{b.title}</p>
                 <p className="book-row-author muted">{b.author}</p>
               </div>
               <div className="book-row-meta">
                 <span className="pill">
-                  {b.type === "pages"
-                    ? `p. ${b.progress.locationValue}${b.totalPages ? ` / ${b.totalPages}` : ""}`
-                    : `ch. ${b.progress.locationValue}`}
+                  p. {b.progress.page} / {b.totalPages}
                 </span>
                 <span className="muted">{b.noteCount} notes</span>
               </div>
